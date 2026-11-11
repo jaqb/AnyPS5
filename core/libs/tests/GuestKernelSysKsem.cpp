@@ -24,10 +24,16 @@
 
 namespace {
 
+constexpr int Enoent = 2;
 constexpr int Efault = 14;
+constexpr int Eexist = 17;
 constexpr int Ebusy = 16;
 constexpr int Einval = 22;
+constexpr int Enfile = 23;
 constexpr int Enospc = 28;
+constexpr int Enametoolong = 63;
+constexpr int OCreat = 0x200;
+constexpr int OExcl = 0x800;
 constexpr int Eagain = 35;
 constexpr int Etimedout = 60;
 constexpr int Eoverflow = 84;
@@ -226,6 +232,80 @@ void Limit() {
     for (const auto id : ids) Require(ksem_destroy_nid_postfix(id) == 0);
 }
 
+void Named() {
+    std::intptr_t first = -1;
+    std::intptr_t second = -1;
+    Require(ksem_open_nid_postfix(&first, "/anyps5-ksem", 0, 0600, 0) == -1 && Error() == Enoent);
+    Require(ksem_open_nid_postfix(&first, "/anyps5-ksem", 0x1, 0600, 0) == -1 && Error() == Einval);
+    Require(ksem_open_nid_postfix(&first, "/anyps5-ksem", OCreat, 0600, 0x80000000u) == -1 && Error() == Einval);
+    Require(ksem_open_nid_postfix(nullptr, "/anyps5-ksem", OCreat, 0600, 1) == -1 && Error() == Efault);
+    Require(ksem_open_nid_postfix(&first, nullptr, 0, 0600, 4) == 0 && first >= 0);
+    Require(Value(first) == 4);
+    Require(ksem_close_nid_postfix(first) == -1 && Error() == Einval);
+    Require(ksem_destroy_nid_postfix(first) == 0);
+    Require(ksem_open_nid_postfix(&first, reinterpret_cast<const char*>(std::uintptr_t{1}), OCreat, 0600, 1) == -1 && Error() == Efault);
+    Require(ksem_open_nid_postfix(&first, "anyps5-ksem", OCreat, 0600, 1) == -1 && Error() == Einval);
+    Require(ksem_open_nid_postfix(&first, "", OCreat, 0600, 1) == -1 && Error() == Einval);
+    const std::string tooLong = "/" + std::string(256, 'a');
+    Require(ksem_open_nid_postfix(&first, tooLong.c_str(), OCreat, 0600, 1) == -1 && Error() == Enametoolong);
+    const std::string longest = "/" + std::string(255, 'a');
+    Require(ksem_open_nid_postfix(&first, longest.c_str(), OCreat, 0600, 1) == 0);
+    Require(ksem_close_nid_postfix(first) == 0);
+    Require(ksem_unlink_nid_postfix(longest.c_str()) == 0);
+    Require(ksem_unlink_nid_postfix(longest.c_str()) == -1 && Error() == Enoent);
+
+    Require(ksem_open_nid_postfix(&first, "/anyps5-ksem", OCreat, 0600, 2) == 0 && first >= 0);
+    Require(Value(first) == 2);
+    Require(ksem_open_nid_postfix(&second, "/anyps5-ksem", OCreat | OExcl, 0600, 5) == -1 && Error() == Eexist);
+    Require(ksem_open_nid_postfix(&second, "/anyps5-ksem", OCreat, 0600, 9) == 0 && second != first);
+    Require(Value(second) == 2);
+    Require(ksem_wait_nid_postfix(first) == 0);
+    Require(Value(second) == 1);
+    Require(ksem_post_nid_postfix(second) == 0 && ksem_post_nid_postfix(second) == 0);
+    Require(Value(first) == 3);
+    Require(ksem_destroy_nid_postfix(first) == -1 && Error() == Einval);
+
+    Require(ksem_close_nid_postfix(first) == 0);
+    Require(ksem_post_nid_postfix(first) == -1 && Error() == Einval);
+    Require(ksem_close_nid_postfix(first) == -1 && Error() == Einval);
+    Require(Value(second) == 3);
+
+    Require(ksem_unlink_nid_postfix("/anyps5-ksem") == 0);
+    Require(ksem_unlink_nid_postfix("/anyps5-ksem") == -1 && Error() == Enoent);
+    Require(Value(second) == 3);
+    Require(ksem_open_nid_postfix(&first, "/anyps5-ksem", 0, 0600, 0) == -1 && Error() == Enoent);
+    Require(ksem_open_nid_postfix(&first, "/anyps5-ksem", OCreat | OExcl, 0600, 7) == 0);
+    Require(Value(first) == 7 && Value(second) == 3);
+    Require(ksem_close_nid_postfix(second) == 0 && ksem_close_nid_postfix(first) == 0);
+    Require(ksem_unlink_nid_postfix("/anyps5-ksem") == 0);
+
+    Require(ksem_unlink_nid_postfix(nullptr) == -1 && Error() == Efault);
+    const std::string pathTooLong(1024, 'b');
+    Require(ksem_unlink_nid_postfix(pathTooLong.c_str()) == -1 && Error() == Enametoolong);
+
+    std::intptr_t anonymous = -1;
+    Require(ksem_init_nid_postfix(&anonymous, 1) == 0);
+    Require(ksem_close_nid_postfix(anonymous) == -1 && Error() == Einval);
+    Require(ksem_destroy_nid_postfix(anonymous) == 0);
+    Require(ksem_close_nid_postfix(-1) == -1 && Error() == Einval);
+
+    std::intptr_t ids[30] = {};
+    for (std::size_t index = 0; index < 30; ++index) {
+        const std::string name = "/anyps5-ksem-" + std::to_string(index);
+        Require(ksem_open_nid_postfix(&ids[index], name.c_str(), OCreat, 0600, 0) == 0);
+    }
+    Require(ksem_open_nid_postfix(&first, "/anyps5-ksem-extra", OCreat, 0600, 0) == -1 && Error() == Enfile);
+    Require(ksem_open_nid_postfix(&first, "/anyps5-ksem-0", 0, 0600, 0) == 0);
+    Require(ksem_init_nid_postfix(&second, 0) == -1 && Error() == Enospc);
+    Require(ksem_close_nid_postfix(first) == 0);
+    for (std::size_t index = 0; index < 30; ++index) {
+        const std::string name = "/anyps5-ksem-" + std::to_string(index);
+        Require(ksem_close_nid_postfix(ids[index]) == 0);
+        Require(ksem_unlink_nid_postfix(name.c_str()) == 0);
+    }
+    Require(ksem_init_nid_postfix(&second, 0) == 0 && ksem_destroy_nid_postfix(second) == 0);
+}
+
 }
 
 class UnreadablePage {
@@ -299,6 +379,7 @@ int main() {
     Identifiers();
     Duplicates();
     Limit();
-    std::puts("ksem unnamed semaphores passed");
+    Named();
+    std::puts("ksem semaphores passed");
     return 0;
 }
